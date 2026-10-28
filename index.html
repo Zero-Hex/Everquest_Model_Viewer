@@ -2062,8 +2062,35 @@ function rebuildExtras() {
 const modelBox = model => { const b = new THREE.Box3(); b.setFromArray(model.pos); return b; };
 // Thin and roughly as tall as it is wide: a shield (a blade is thin too, but long).
 function isShieldLike(model) {
-  const s = modelBox(model).getSize(new THREE.Vector3()), lo = Math.min(s.x, s.z), hi = Math.max(s.x, s.z);
-  return s.y < 0.25 * lo && hi > 1 && lo / hi > 0.5;
+  if (model._shieldLike !== undefined) return model._shieldLike;
+  const b = modelBox(model), s = b.getSize(new THREE.Vector3()), lo = Math.min(s.x, s.z), hi = Math.max(s.x, s.z);
+  let flat = s.y < 0.25 * lo && hi > 1 && lo / hi > 0.5;
+  // Flat and broad is not enough: a scythe or a double axe with a big head is flat and broad too.
+  // A shield is a solid plate: its front-view outline fills most of its box. Weapons with a head on a
+  // shaft fill 15-48% of it, with the grip near the shaft end; shields fill 45-100% with the grip near the middle.
+  if (flat && model.tris && model.pos) {
+    const fill = silhouetteFill(model, b, s), ox = (0 - b.min.x) / (s.x || 1);
+    flat = fill >= 0.5 || (fill >= 0.4 && Math.abs(ox - 0.5) < 0.15);
+  }
+  return (model._shieldLike = flat);
+}
+// Share of the X-Z bounding box covered by the model seen from the front, rasterised at 64 x 64.
+function silhouetteFill(model, b, s) {
+  const N = 64, c = document.createElement("canvas"); c.width = c.height = N;
+  const g = c.getContext("2d"), p = model.pos, sx = (N - 1) / (s.x || 1), sz = (N - 1) / (s.z || 1);
+  g.fillStyle = "#fff"; g.beginPath();
+  for (const t of model.tris) {
+    // Front and back faces project with opposite windings and would cancel under "nonzero": wind every one the same way.
+    let a = 3 * t[0], d = 3 * t[1], e = 3 * t[2];
+    if ((p[d] - p[a]) * (p[e + 2] - p[a + 2]) - (p[e] - p[a]) * (p[d + 2] - p[a + 2]) < 0) [d, e] = [e, d];
+    g.moveTo((p[a] - b.min.x) * sx, (p[a + 2] - b.min.z) * sz);
+    g.lineTo((p[d] - b.min.x) * sx, (p[d + 2] - b.min.z) * sz);
+    g.lineTo((p[e] - b.min.x) * sx, (p[e + 2] - b.min.z) * sz); g.closePath();
+  }
+  g.fill("nonzero");
+  const px = g.getImageData(0, 0, N, N).data; let n = 0;
+  for (let i = 3; i < px.length; i += 4) if (px[i] > 127) n++;
+  return n / (N * N);
 }
 
 const BODY = { rHand: [0, -2.45, 1.85], lHand: [0, 2.45, 1.85], lForearm: [0, 1.8, 1.85], rWrist: [0, -2.15, 1.85], head: [0, 0, 2.45] };
