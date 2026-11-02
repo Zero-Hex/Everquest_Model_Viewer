@@ -3343,7 +3343,8 @@ function preflight() {
     let m; try { m = readMOD(f.bytes); } catch (e) { add("bad", `${f.name}: can't be read (${e.message}).`); continue; }
     if (!/^col_/i.test(f.name)) ids.push(f.name.replace(/\.mod$/i, "").toUpperCase());
     if (m.sizeOk === false) add("warn", `${f.name}: the file size doesn't match the EQGM layout; check the exporter.`);
-    if (m.nVert > 65535) add("bad", `${f.name}: ${m.nVert.toLocaleString()} vertices; over 65,535 can't be indexed.`);
+    // Not a limit: a 632,738-vertex item (700k triangles in 292 batches) loaded and drew in game. Only a size note.
+    if (m.nVert > 65535) add("info", `${f.name}: ${m.nVert.toLocaleString()} vertices, ${m.tris.length.toLocaleString()} triangles - heavy. The client draws it (tested up to 633k vertices), but every player who sees it pays for it; most items stay under ~60k.`);
     const count = new Map(); for (const t of m.tris) count.set(t[3], (count.get(t[3]) || 0) + 1);
     for (const mat of m.mats) {
       const n = count.get(mat.index) || 0;
