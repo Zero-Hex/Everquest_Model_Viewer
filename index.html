@@ -347,6 +347,8 @@ details.sec.userhide { display: none !important; }
           <div class="menupop" id="secPop"></div></details>
         <button id="roll" title="Turn the item a quarter turn on screen (R). Old .s3d items are built lying along X, so shields show up sideways.">Rotate 90°</button>
         <span id="animwrap" hidden><label class="toggle" for="anim">Animation <select id="anim"></select></label></span>
+        <span id="texsetwrap" hidden><label class="toggle" for="texset" title="Alternate texture sets this model ships with (_s00_, _s01_ ...)">Texture set <select id="texset"></select></label></span>
+        <span id="headwrap" hidden><label class="toggle" for="headsel" title="Head variants of a creature model (HE00, HE01 ...)">Head <select id="headsel"></select></label></span>
         <button id="optsBtn" aria-expanded="false" aria-controls="opts">Options</button>
         <span class="sep"></span>
         <div class="opts" id="opts">
@@ -1379,8 +1381,45 @@ function layered(names) {
   const lv = { w, h, rgba: out };
   return { w, h, rgba: out, levels: [lv] };
 }
+// Alternate texture sets: models name their textures ..._s00_..., _s01_...; the
+// "Texture set" picker swaps the set number when that file is in the archive.
+let texSet = "";
+function withTexSet(name) {
+  if (!texSet || !name || !/_s\d\d_/i.test(name) || !archive) return name;
+  const cand = name.replace(/_s\d\d_/i, `_s${texSet}_`);
+  return archive.has(cand.toLowerCase()) ? cand : name;
+}
+function textureSetsOf(model) {
+  const sets = new Set();
+  if (!model || !model.mats || !archive) return sets;
+  for (const mat of model.mats) {
+    const n = diffuseName(mat); if (!n || !/_s\d\d_/i.test(n)) continue;
+    const re = new RegExp("^" + n.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/_s\d\d_/, "_s(\\d\\d)_") + "$");
+    for (const k of archive.keys()) { const m = re.exec(k); if (m) sets.add(m[1]); }
+  }
+  return sets;
+}
+function listTextureSets() {
+  const model = current && current.userData.model, sets = [...textureSetsOf(model)].sort();
+  const sel = $("texset"); sel.innerHTML = "";
+  for (const v of sets) { const o = document.createElement("option"); o.value = v; o.textContent = `Set ${v}`; sel.append(o); }
+  $("texsetwrap").hidden = sets.length < 2;
+  const want = sets.includes(texSet) ? texSet : (sets[0] || "");
+  sel.value = want;
+  if (want !== texSet) { texSet = want; return true; }
+  return false;
+}
+function listHeads() {
+  const model = current && current.userData.model, heads = model && model.mds ? model.mds.heads : [];
+  const sel = $("headsel"); sel.innerHTML = "";
+  heads.forEach((h, i) => { const o = document.createElement("option"); o.value = i; o.textContent = h; sel.append(o); });
+  $("headwrap").hidden = heads.length < 2;
+  sel.value = String(Math.min(mdsHead, Math.max(0, heads.length - 1)));
+}
+
 function textureFor(name, masked) {
   if (!name) return null;
+  name = withTexSet(name);
   const k = name.toLowerCase(), mode = $("mip") ? $("mip").value : "auto";
   const ck = (texScope ? texScope.id + "|" : "") + (mode === "auto" ? k : k + "@" + mode) + (masked ? "#masked" : "");
   if (texCache.has(ck)) return texCache.get(ck);
@@ -1750,7 +1789,7 @@ function openModel(key, keepView) {
   document.querySelectorAll("#models button").forEach(b => b.setAttribute("aria-current", b.dataset.key === key ? "true" : "false"));
   const label = we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase();
   currentName = nameKey(label); $("nameRow").hidden = false; $("friendlyName").value = friendly[currentName] || "";
-  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); listAnimations(key); buildEffects(); syncExtraButtons(); holdRefresh(); $("arcInfo").classList.remove("err");
+  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); if (listTextureSets()) rebuild(); listHeads(); listAnimations(key); buildEffects(); syncExtraButtons(); holdRefresh(); $("arcInfo").classList.remove("err");
         addRecent({ arc: archiveName, key: we ? null : key, label: we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase() }); }
   catch (e) { $("arcInfo").textContent = `${label}: ${e.message}`; $("arcInfo").classList.add("err"); }
 }
@@ -3605,6 +3644,8 @@ const rebuild = () => { if (!current) return; const m = current.userData.model; 
 $("wire").addEventListener("change", rebuild);
 $("textured").addEventListener("change", rebuild);
 $("anim").addEventListener("change", e => startAnimation(e.target.value));
+$("texset").addEventListener("change", e => { texSet = e.target.value; rebuild(); });
+$("headsel").addEventListener("change", e => { mdsHead = +e.target.value; if (currentKey) openModel(currentKey, true); });
 $("mip").addEventListener("change", () => { rebuild(); if (!$("texview").hidden && currentTex) showTexture(currentTex); });
 $("regfile").addEventListener("change", e => { if (e.target.files.length) loadRegistry(e.target.files[0]); e.target.value = ""; });
 $("texclose").addEventListener("click", () => { $("texview").hidden = true; });
