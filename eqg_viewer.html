@@ -1624,7 +1624,9 @@ function listAnimations(key, keep) {
   sel.innerHTML = '<option value="">None (bind pose)</option>';
   for (const n of names) { const o = document.createElement("option"); o.value = n; o.textContent = n.replace(/\.ani$/i, "").replace(/_it\d+$/i, "").toUpperCase(); sel.append(o); }
   $("animwrap").hidden = !names.length;
-  sel.value = names.includes(prev) ? prev : (names[0] || "");
+  // Default to the standing pose (STND) when the model has one; otherwise the first animation.
+  const stand = names.find(n => /^stnd_/i.test(n));
+  sel.value = names.includes(prev) ? prev : (stand || names[0] || "");
   startAnimation(sel.value);
 }
 
