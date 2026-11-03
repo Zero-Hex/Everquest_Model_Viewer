@@ -422,6 +422,12 @@ function readPFS(buf) {
   data.sort((a, b) => a.off - b.off);
   const files = new Map();
   data.forEach((e, i) => { if (names[i] !== undefined) files.set(names[i].toLowerCase(), { name: names[i], bytes: unpack(e.off, e.size) }); });
+  // Skinned creature models (.mds) open like .mod ones: list each under its .mod
+  // name too (readMOD reads either), so animations, textures and lists find it.
+  for (const [k, f] of [...files]) {
+    const mk = k.replace(/\.mds$/, ".mod");
+    if (mk !== k && !files.has(mk)) files.set(mk, { name: f.name.replace(/\.mds$/i, ".mod"), bytes: f.bytes, mds: true });
+  }
   return files;
 }
 
@@ -431,9 +437,76 @@ function readPFS(buf) {
 // (type 0 float, 2 string, 3 colour); vertices (v1/v2: pos3 nrm3 uv2 = 32
 // bytes; v3: pos3 nrm3 rgba uv2 uv2 = 44); triangles {i0,i1,i2, material,
 // flags} (20 bytes); bones (56 bytes); per-vertex weights (36 bytes).
+// EQGS skinned model (.mds, creatures such as SIN): "EQGS", version, string-table
+// length, materials, bones, models (u32). Then the string table, materials (as
+// in .mod), bones (56 bytes, as in .mod) and per model {main, nameOff, verts,
+// tris, weights} + 32-byte vertices, 20-byte triangles, 36-byte weights. The
+// first model is the body; the others are head variants (<CODE>HE00, HE01...).
+// The viewer shows the body with one head (headVariant, default the first).
+let mdsHead = 0;
+function readMDS(bytes, headVariant = mdsHead) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const [ver, slen, nMat, nBone, nModel] = [1, 2, 3, 4, 5].map(i => dv.getUint32(i * 4, true));
+  const strBase = 24;
+  const str = off => { let s = ""; for (let i = strBase + off; i < strBase + slen && bytes[i]; i++) s += String.fromCharCode(bytes[i]); return s; };
+  let p = strBase + slen;
+  const mats = [];
+  for (let m = 0; m < nMat; m++) {
+    const mat = { index: dv.getUint32(p, true), name: str(dv.getUint32(p + 4, true)), shader: str(dv.getUint32(p + 8, true)), props: [] };
+    const pc = dv.getUint32(p + 12, true); p += 16;
+    for (let k = 0; k < pc; k++) {
+      const pname = str(dv.getUint32(p, true)), type = dv.getUint32(p + 4, true);
+      const value = type === 0 ? dv.getFloat32(p + 8, true) : type === 2 ? str(dv.getUint32(p + 8, true)) : dv.getUint32(p + 8, true);
+      mat.props.push({ name: pname, type, value }); p += 12;
+    }
+    mats.push(mat);
+  }
+  const bones = [];
+  for (let b = 0; b < nBone; b++) {
+    const o = p + b * 56, f = k => dv.getFloat32(o + k, true);
+    bones.push({ name: str(dv.getUint32(o, true)).toUpperCase(), sibling: dv.getInt32(o + 4, true), child: dv.getInt32(o + 12, true), parent: -1,
+      pos: [f(16), f(20), f(24)], quat: [f(28), f(32), f(36), f(40)], scale: [f(44), f(48), f(52)] });
+  }
+  for (let b = 0; b < nBone; b++) { let c = bones[b].child, guard = 0;
+    while (c >= 0 && c < nBone && guard++ < nBone) { bones[c].parent = b; c = bones[c].sibling; } }
+  p += nBone * 56;
+  const models = [];
+  for (let m = 0; m < nModel; m++) {
+    const name = str(dv.getUint32(p + 4, true)), nv = dv.getUint32(p + 8, true), nt = dv.getUint32(p + 12, true), nw = dv.getUint32(p + 16, true);
+    p += 20; models.push({ name, nv, nt, nw, v: p, t: p + nv * 32, w: p + nv * 32 + nt * 20 });
+    p += nv * 32 + nt * 20 + nw * 36;
+  }
+  const heads = models.filter((m, i) => i > 0 && /HE\d\d$/i.test(m.name));
+  const use = [models[0]].concat(heads.length ? [heads[Math.min(headVariant, heads.length - 1)]] : models.slice(1));
+  const nVert = use.reduce((a, m) => a + m.nv, 0), nTri = use.reduce((a, m) => a + m.nt, 0);
+  const pos = new Float32Array(nVert * 3), nrm = new Float32Array(nVert * 3), uv = new Float32Array(nVert * 2), tris = [], weights = [];
+  let base = 0;
+  for (const m of use) {
+    for (let v = 0; v < m.nv; v++) {
+      const o = m.v + v * 32, i = base + v;
+      for (let k = 0; k < 3; k++) { pos[i * 3 + k] = dv.getFloat32(o + k * 4, true); nrm[i * 3 + k] = dv.getFloat32(o + 12 + k * 4, true); }
+      uv[i * 2] = dv.getFloat32(o + 24, true); uv[i * 2 + 1] = dv.getFloat32(o + 28, true);
+    }
+    for (let t = 0; t < m.nt; t++) {
+      const o = m.t + t * 20;
+      tris.push([base + dv.getUint32(o, true), base + dv.getUint32(o + 4, true), base + dv.getUint32(o + 8, true), dv.getInt32(o + 12, true)]);
+    }
+    for (let v = 0; v < m.nv; v++) {
+      const list = [];
+      if (v < m.nw) { const o = m.w + v * 36, n = Math.min(4, dv.getUint32(o, true));
+        for (let i = 0; i < n; i++) { const bi = dv.getUint32(o + 4 + i * 8, true), w = dv.getFloat32(o + 8 + i * 8, true); if (bi < nBone && w > 0) list.push([bi, w]); } }
+      weights.push(list);
+    }
+    base += m.nv;
+  }
+  return { ver, mats, pos, nrm, uv, tris, nVert, nTri, nBone, vsize: 32, vstart: 0, bones, weights, sizeOk: p === bytes.byteLength,
+    mds: { models: models.map(m => m.name), shown: use.map(m => m.name), heads: heads.map(h => h.name) } };
+}
+
 function readMOD(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic === "EQGS") return readMDS(bytes);
   if (magic !== "EQGM") throw new Error("Not an EQGM model.");
   const [ver, slen, nMat, nVert, nTri, nBone] = [1, 2, 3, 4, 5, 6].map(i => dv.getUint32(i * 4, true));
   const strBase = 28;
@@ -1521,15 +1594,18 @@ function startAnimation(name) {
   if (!name) { if (model.bones && model.bones.length) { attrP.array.set(model.pos); attrN.array.set(model.nrm); attrP.needsUpdate = attrN.needsUpdate = true; } return; }
   try {
     const anim = readANI(archive.get(name).bytes);
-    const rest = worldMatrices(model.bones, model.bones.map(b => trs(b.pos, b.quat, b.scale)));
-    skin = { model, mesh: current, anim, start: performance.now(), restInv: rest.map(m => m.clone().invert()), name };
+    // .mds skeletons and their animations store the transposed rotation:
+    // compose with the conjugate quaternion (as the game does for these).
+    const q = model.mds ? k => [-k[0], -k[1], -k[2], k[3]] : k => k;
+    const rest = worldMatrices(model.bones, model.bones.map(b => trs(b.pos, q(b.quat), b.scale)));
+    skin = { model, mesh: current, anim, start: performance.now(), restInv: rest.map(m => m.clone().invert()), name, q };
   } catch (e) { $("arcInfo").textContent = `${name}: ${e.message}`; $("arcInfo").classList.add("err"); }
 }
 const _v = new THREE.Vector3(), _n = new THREE.Vector3(), _acc = new THREE.Vector3(), _accN = new THREE.Vector3(), _m3 = new THREE.Matrix3();
 function applySkin(now) {
   const { model, mesh, anim, restInv } = skin;
   const t = (now - skin.start) % anim.duration;
-  const local = model.bones.map(b => { const keys = anim.tracks.get(b.name); const k = keys && keys.length ? sampleTrack(keys, t) : b; return trs(k.pos, k.quat, k.scale); });
+  const local = model.bones.map(b => { const keys = anim.tracks.get(b.name); const k = keys && keys.length ? sampleTrack(keys, t) : b; return trs(k.pos, skin.q(k.quat), k.scale); });
   const world = worldMatrices(model.bones, local);
   const mats = world.map((w, i) => w.multiply(restInv[i]));
   const nmats = mats.map(m => new THREE.Matrix3().setFromMatrix4(m));
