@@ -342,6 +342,7 @@ details.sec.userhide { display: none !important; }
         <button id="roll" title="Turn the item a quarter turn on screen (R). Old .s3d items are built lying along X, so shields show up sideways.">Rotate 90°</button>
         <span id="animwrap" hidden><label class="toggle" for="anim">Animation <select id="anim"></select></label></span>
         <span id="texsetwrap" hidden><label class="toggle" for="texset" title="Alternate texture sets this model ships with (_s00_, _s01_ ...)">Texture set <select id="texset"></select></label></span>
+        <span id="bodywrap" hidden><label class="toggle" for="bodysel" title="Body variants of a creature model (e.g. armored goblins)">Body <select id="bodysel"></select></label></span>
         <span id="headwrap" hidden><label class="toggle" for="headsel" title="Head variants of a creature model (HE00, HE01 ...)">Head <select id="headsel"></select></label></span>
         <button id="optsBtn" aria-expanded="false" aria-controls="opts">Options</button>
         <span class="sep"></span>
@@ -439,8 +440,8 @@ function readPFS(buf) {
 // tris, weights} + 32-byte vertices, 20-byte triangles, 36-byte weights. The
 // first model is the body; the others are head variants (<CODE>HE00, HE01...).
 // The viewer shows the body with one head (headVariant, default the first).
-let mdsHead = 0;
-function readMDS(bytes, headVariant = mdsHead) {
+let mdsHead = 0, mdsBody = 0;
+function readMDS(bytes, headVariant = mdsHead, bodyVariant = mdsBody) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const [ver, slen, nMat, nBone, nModel] = [1, 2, 3, 4, 5].map(i => dv.getUint32(i * 4, true));
   const strBase = 24;
@@ -472,8 +473,9 @@ function readMDS(bytes, headVariant = mdsHead) {
     p += 20; models.push({ name, nv, nt, nw, v: p, t: p + nv * 32, w: p + nv * 32 + nt * 20 });
     p += nv * 32 + nt * 20 + nw * 36;
   }
-  const heads = models.filter((m, i) => i > 0 && /HE\d\d$/i.test(m.name));
-  const use = [models[0]].concat(heads.length ? [heads[Math.min(headVariant, heads.length - 1)]] : models.slice(1));
+  const heads = models.filter(m => /HE\d\d$/i.test(m.name)), bodies = models.filter(m => !/HE\d\d$/i.test(m.name));
+  const body = bodies.length ? bodies[Math.min(bodyVariant, bodies.length - 1)] : models[0];
+  const use = [body].concat(heads.length ? [heads[Math.min(headVariant, heads.length - 1)]] : []);
   const nVert = use.reduce((a, m) => a + m.nv, 0), nTri = use.reduce((a, m) => a + m.nt, 0);
   const pos = new Float32Array(nVert * 3), nrm = new Float32Array(nVert * 3), uv = new Float32Array(nVert * 2), tris = [], weights = [];
   let base = 0;
@@ -496,7 +498,7 @@ function readMDS(bytes, headVariant = mdsHead) {
     base += m.nv;
   }
   return { ver, mats, pos, nrm, uv, tris, nVert, nTri, nBone, vsize: 32, vstart: 0, bones, weights, sizeOk: p === bytes.byteLength,
-    mds: { models: models.map(m => m.name), shown: use.map(m => m.name), heads: heads.map(h => h.name) } };
+    mds: { models: models.map(m => m.name), shown: use.map(m => m.name), heads: heads.map(h => h.name), bodies: bodies.map(b => b.name) } };
 }
 
 function readMOD(bytes) {
@@ -1403,6 +1405,13 @@ function listTextureSets() {
   if (want !== texSet) { texSet = want; return true; }
   return false;
 }
+function listBodies() {
+  const model = current && current.userData.model, bodies = model && model.mds ? model.mds.bodies : [];
+  const sel = $("bodysel"); sel.innerHTML = "";
+  bodies.forEach((h, i) => { const o = document.createElement("option"); o.value = i; o.textContent = h; sel.append(o); });
+  $("bodywrap").hidden = bodies.length < 2;
+  sel.value = String(Math.min(mdsBody, Math.max(0, bodies.length - 1)));
+}
 function listHeads() {
   const model = current && current.userData.model, heads = model && model.mds ? model.mds.heads : [];
   const sel = $("headsel"); sel.innerHTML = "";
@@ -1783,7 +1792,7 @@ function openModel(key, keepView) {
   document.querySelectorAll("#models button").forEach(b => b.setAttribute("aria-current", b.dataset.key === key ? "true" : "false"));
   const label = we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase();
   currentName = nameKey(label); $("nameRow").hidden = false; $("friendlyName").value = friendly[currentName] || "";
-  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); if (listTextureSets()) rebuild(); listHeads(); listAnimations(key); buildEffects(); syncExtraButtons(); holdRefresh(); $("arcInfo").classList.remove("err");
+  try { show(we ? we.build() : readMOD(f.bytes), `${archiveName} › ${withName(label)}`, keepView); if (listTextureSets()) rebuild(); listBodies(); listHeads(); listAnimations(key); buildEffects(); syncExtraButtons(); holdRefresh(); $("arcInfo").classList.remove("err");
         addRecent({ arc: archiveName, key: we ? null : key, label: we ? we.label : f.name.replace(/\.mod$/i, "").toUpperCase() }); }
   catch (e) { $("arcInfo").textContent = `${label}: ${e.message}`; $("arcInfo").classList.add("err"); }
 }
@@ -3640,6 +3649,7 @@ $("textured").addEventListener("change", rebuild);
 $("anim").addEventListener("change", e => startAnimation(e.target.value));
 $("texset").addEventListener("change", e => { texSet = e.target.value; rebuild(); });
 $("headsel").addEventListener("change", e => { mdsHead = +e.target.value; if (currentKey) openModel(currentKey, true); });
+$("bodysel").addEventListener("change", e => { mdsBody = +e.target.value; if (currentKey) openModel(currentKey, true); });
 $("mip").addEventListener("change", () => { rebuild(); if (!$("texview").hidden && currentTex) showTexture(currentTex); });
 $("regfile").addEventListener("change", e => { if (e.target.files.length) loadRegistry(e.target.files[0]); e.target.value = ""; });
 $("texclose").addEventListener("click", () => { $("texview").hidden = true; });
